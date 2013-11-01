@@ -94,6 +94,12 @@ static void p2p_expire_peers(struct p2p_data *p2p)
 
 		p2p_dbg(p2p, "Expiring old peer entry " MACSTR,
 			MAC2STR(dev->info.p2p_device_addr));
+
+#ifdef ANDROID_P2P
+		/* SD_FAIR_POLICY: Update the current sd_dev_list pointer to next device */
+		if(&dev->list == p2p->sd_dev_list)
+			p2p->sd_dev_list = dev->list.next;
+#endif
 		dl_list_del(&dev->list);
 		p2p_device_free(p2p, dev);
 	}
@@ -390,6 +396,11 @@ static struct p2p_device * p2p_create_device(struct p2p_data *p2p,
 	}
 	if (count + 1 > p2p->cfg->max_peers && oldest) {
 		p2p_dbg(p2p, "Remove oldest peer entry to make room for a new peer");
+#ifdef ANDROID_P2P
+		/* SD_FAIR_POLICY: Update the current sd_dev_list pointer to next device */
+		if(&oldest->list == p2p->sd_dev_list)
+			p2p->sd_dev_list = oldest->list.next;
+#endif
 		dl_list_del(&oldest->list);
 		p2p_device_free(p2p, oldest);
 	}
@@ -925,7 +936,15 @@ static int p2p_run_after_scan(struct p2p_data *p2p)
 				      p2p->after_scan_tx->wait_time);
 		os_free(p2p->after_scan_tx);
 		p2p->after_scan_tx = NULL;
+#ifdef ANDROID_P2P
+		/* For SD frames, there is a scenario, where we can receive a SD request frame during p2p_scan.
+		 * At that moment, we will send the SD response from this context. After sending the SD response,
+		 * we need to continue p2p_find. But if we return 1 from here, p2p_find is going to be stopped.
+		 */
+		return 0;
+#else
 		return 1;
+#endif
 	}
 
 	op = p2p->start_after_scan;
@@ -2390,7 +2409,16 @@ struct p2p_data * p2p_init(const struct p2p_config *cfg)
 			p2p->cfg->num_pref_chan = 0;
 	}
 
+#ifdef ANDROID_P2P
+	/* 100ms listen time is too less to receive the response frames in some scenarios
+	 * increasing min listen time to 200ms.
+	 */
+	p2p->min_disc_int = 2;
+	/* SD_FAIR_POLICY: Initializing the SD current serviced pointer to NULL */
+	p2p->sd_dev_list = NULL;
+#else
 	p2p->min_disc_int = 1;
+#endif
 	p2p->max_disc_int = 3;
 	p2p->max_disc_tu = -1;
 
@@ -2466,6 +2494,10 @@ void p2p_flush(struct p2p_data *p2p)
 		dl_list_del(&dev->list);
 		p2p_device_free(p2p, dev);
 	}
+#ifdef ANDROID_P2P
+	/* SD_FAIR_POLICY: Initializing the SD current serviced pointer to NULL */
+	p2p->sd_dev_list = NULL;
+#endif
 	p2p_free_sd_queries(p2p);
 	os_free(p2p->after_scan_tx);
 	p2p->after_scan_tx = NULL;
@@ -2644,6 +2676,9 @@ int p2p_set_country(struct p2p_data *p2p, const char *country)
 void p2p_continue_find(struct p2p_data *p2p)
 {
 	struct p2p_device *dev;
+#ifdef ANDROID_P2P
+	int skip=1;
+#endif
 	p2p_set_state(p2p, P2P_SEARCH);
 	dl_list_for_each(dev, &p2p->devices, struct p2p_device, list) {
 		if (dev->sd_pending_bcast_queries == 0) {
